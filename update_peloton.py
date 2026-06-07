@@ -426,4 +426,8 @@ def main():
     print(f"{'='*55}\n")
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"\nERROR: {e}")
+        sys.exit(0)  # Always exit 0 — suppress macOS launchd notifications
