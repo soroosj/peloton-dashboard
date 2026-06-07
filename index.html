@@ -134,7 +134,7 @@ td.muted{color:var(--muted)}
       <span class="chart-title">Monthly workouts</span>
       <div class="legend" id="chartLegend"></div>
     </div>
-    <div style="position:relative;height:130px"><canvas id="mainChart" role="img" aria-label="Monthly workout activity bar chart"></canvas></div>
+    <div style="position:relative;height:130px"><canvas id="mainChart" role="img" aria-label="Watts histogram"></canvas></div>
   </div>
   <div class="table-card">
     <div class="table-header">
@@ -281,37 +281,35 @@ function renderStats() {
 }
 
 function renderChart() {
-  const monthly = {};
-  const discs = [...F.discs].filter(d => DISC_COLORS[d]);
-  filtered.forEach(r => {
-    const m = r[0].slice(0,7);
-    if (!monthly[m]) monthly[m] = {};
-    monthly[m][r[1]] = (monthly[m][r[1]]||0) + 1;
-  });
-  const months = Object.keys(monthly).sort();
-  const short = months.map(m => { const [y,mo] = m.split('-'); return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo)-1]+"'"+ y.slice(2); });
-  const datasets = discs.map(d => ({
-    label: d, data: months.map(m => monthly[m][d]||0),
-    backgroundColor: DISC_COLORS[d], stack: 'a'
-  }));
+  const wattsVals = filtered.map(r => r[7]).filter(w => w != null && w > 0);
   const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
   const gc = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)';
   const tc = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)';
   if (chartInstance) chartInstance.destroy();
+  if (wattsVals.length === 0) {
+    document.getElementById('chartLegend').innerHTML = '';
+    return;
+  }
+  const binSize = 10;
+  const minW = Math.floor(Math.min(...wattsVals) / binSize) * binSize;
+  const maxW = Math.ceil(Math.max(...wattsVals) / binSize) * binSize;
+  const bins = [];
+  for (let b = minW; b < maxW; b += binSize) bins.push(b);
+  const counts = bins.map(b => wattsVals.filter(w => w >= b && w < b + binSize).length);
+  const labels = bins.map(b => b + '');
   chartInstance = new Chart(document.getElementById('mainChart'), {
     type: 'bar',
-    data: { labels: short, datasets },
+    data: { labels, datasets: [{ data: counts, backgroundColor: '#378ADD', borderWidth: 0 }] },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
-      plugins: { legend: { display: false } },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { title: ctx => ctx[0].label + '–' + (parseInt(ctx[0].label)+binSize) + 'W', label: ctx => ctx.raw + ' workouts' } } },
       scales: {
-        x: { stacked: true, grid: { display: false }, ticks: { color: tc, font: { size: 10 }, autoSkip: true, maxTicksLimit: 18, maxRotation: 45 } },
-        y: { stacked: true, grid: { color: gc }, ticks: { color: tc, font: { size: 10 } } }
+        x: { grid: { display: false }, ticks: { color: tc, font: { size: 10 }, autoSkip: true, maxTicksLimit: 15, maxRotation: 0 } },
+        y: { grid: { color: gc }, ticks: { color: tc, font: { size: 10 } } }
       }
     }
   });
-  const lg = document.getElementById('chartLegend');
-  lg.innerHTML = discs.map(d => `<span><span class="legend-dot" style="background:${DISC_COLORS[d]}"></span>${d}</span>`).join('');
+  document.getElementById('chartLegend').innerHTML = `<span style="color:var(--muted);font-size:11px">${wattsVals.length} rides with watts · ${Math.round(wattsVals.reduce((a,b)=>a+b,0)/wattsVals.length)}W avg</span>`;
 }
 
 function renderTable() {
