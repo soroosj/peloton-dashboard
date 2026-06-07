@@ -1,0 +1,42 @@
+name: Update Peloton Dashboard
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 20:00 Houston (UTC-6) daily
+  workflow_dispatch:        # allow manual runs
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run update script
+        env:
+          PELOTON_EMAIL:    ${{ secrets.PELOTON_EMAIL }}
+          PELOTON_PASSWORD: ${{ secrets.PELOTON_PASSWORD }}
+          GITHUB_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTIONS:   'true'
+        run: python update_peloton.py
+
+      - name: Commit and push changes
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pedalingdata_workouts.csv index.html
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Auto-update dashboard $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
