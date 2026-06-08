@@ -231,8 +231,12 @@ function applyFilters() {
     if (F.type && type !== F.type) return false;
     if (F.instr && instr !== F.instr) return false;
     if (F.search && !(title && title.toLowerCase().includes(F.search)) && !(instr && instr.toLowerCase().includes(F.search))) return false;
-    // Exclude unfinished cycling workouts: output below 10 kJ
-    if (disc === 'Cycling' && (output === null || output === '' || parseFloat(output) < 10)) return false;
+    // Exclude unfinished cycling workouts
+    if (disc === 'Cycling') {
+      const kj = parseFloat(output) || 0;
+      if (kj < 10) return false;
+      if (len === 30 && kj < 100) return false;
+    }
     return true;
   });
   sortAndRender();
