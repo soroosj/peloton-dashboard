@@ -308,8 +308,18 @@ def rebuild_html():
     }
     raw_json = json.dumps(raw, separators=(',', ':'))
 
-    with open(HTML_PATH, 'r', encoding='utf-8') as f:
-        html = f.read()
+    # Always fetch current template from GitHub so local copy stays in sync
+    gh_headers = {
+        'Authorization': f'token {GITHUB_TOKEN}',
+        'Accept': 'application/vnd.github.v3+json',
+    }
+    gh_url = f'https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}'
+    gh_resp = requests.get(gh_url, headers=gh_headers)
+    if gh_resp.ok:
+        html = base64.b64decode(gh_resp.json()['content']).decode('utf-8')
+    else:
+        with open(HTML_PATH, 'r', encoding='utf-8') as f:
+            html = f.read()
 
     start = html.find('const RAW = ')
     if start == -1:
@@ -402,6 +412,9 @@ def main():
     print(f"\n[4/5] Fetching workout details and updating CSV...")
     csv_rows = []
     for i, w in enumerate(reversed(new_workouts)):  # oldest first
+        if w.get('status') not in (None, '', 'COMPLETE'):
+            print(f"  Skipping incomplete workout ({w.get('status')})")
+            continue
         title = (w.get('ride') or {}).get('title', 'Unknown')
         print(f"  [{i+1}/{len(new_workouts)}] {title}")
         details = get_workout_details(w['id'], token)
