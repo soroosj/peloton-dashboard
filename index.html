@@ -134,7 +134,7 @@ td.muted{color:var(--muted)}
       <span class="chart-title">Monthly workouts</span>
       <div class="legend" id="chartLegend"></div>
     </div>
-    <div style="position:relative;height:130px"><canvas id="mainChart" role="img" aria-label="Monthly workout activity bar chart"></canvas></div>
+    <div style="position:relative;height:130px"><canvas id="mainChart" role="img" aria-label="Watts histogram"></canvas></div>
   </div>
   <div class="table-card">
     <div class="table-header">
@@ -150,6 +150,7 @@ td.muted{color:var(--muted)}
       <thead>
         <tr>
           <th style="width:55px">#</th>
+          <th style="width:55px" onclick="setSort('pct')">Pct<span class="sort-arrow" id="sort-pct"></span></th>
           <th style="width:110px" onclick="setSort('date')">Date<span class="sort-arrow" id="sort-date"></span></th>
           <th style="width:100px" onclick="setSort('disc')">Discipline<span class="sort-arrow" id="sort-disc"></span></th>
           <th style="width:130px" onclick="setSort('instr')">Instructor<span class="sort-arrow" id="sort-instr"></span></th>
@@ -158,7 +159,6 @@ td.muted{color:var(--muted)}
           <th style="width:auto" onclick="setSort('title')">Title<span class="sort-arrow" id="sort-title"></span></th>
           <th style="width:65px" onclick="setSort('watts')">Watts<span class="sort-arrow" id="sort-watts"></span></th>
           <th style="width:65px" onclick="setSort('output')">Output<span class="sort-arrow" id="sort-output"></span></th>
-          <th style="width:55px" onclick="setSort('hr')">HR<span class="sort-arrow" id="sort-hr"></span></th>
           <th style="width:65px" onclick="setSort('dist')">km<span class="sort-arrow" id="sort-dist"></span></th>
         </tr>
       </thead>
@@ -192,7 +192,7 @@ function init() {
     discDiv.appendChild(lbl);
   });
   const lenDiv = document.getElementById('lengthFilters');
-  RAW.lengths.filter(l => l <= 60).forEach(l => {
+  [5,10,15,20,30,45,60].forEach(l => {
     const checked = l === 30;
     const lbl = document.createElement('label');
     lbl.className = 'check-label';
@@ -231,19 +231,26 @@ function applyFilters() {
     if (F.type && type !== F.type) return false;
     if (F.instr && instr !== F.instr) return false;
     if (F.search && !(title && title.toLowerCase().includes(F.search)) && !(instr && instr.toLowerCase().includes(F.search))) return false;
+    // Exclude unfinished cycling workouts
+    if (disc === 'Cycling') {
+      const kj = parseFloat(output) || 0;
+      if (kj < 10) return false;
+      if (len === 30 && kj < 130) return false;
+    }
     return true;
   });
   sortAndRender();
 }
 
 function setSort(col) {
+  if (col === 'pct') col = 'watts';
   if (sortCol === col) sortDir *= -1; else { sortCol = col; sortDir = -1; }
   page = 1;
   sortAndRender();
 }
 
 function sortAndRender() {
-  const idx = {date:0,disc:1,instr:2,len:3,type:4,title:5,output:6,watts:7,cal:11,hr:12,dist:10};
+  const idx = {date:0,disc:1,instr:2,len:3,type:4,title:5,output:6,watts:7,cal:11,dist:10};
   const i = idx[sortCol] ?? 0;
   filtered.sort((a,b) => {
     const av = a[i], bv = b[i];
@@ -280,37 +287,35 @@ function renderStats() {
 }
 
 function renderChart() {
-  const monthly = {};
-  const discs = [...F.discs].filter(d => DISC_COLORS[d]);
-  filtered.forEach(r => {
-    const m = r[0].slice(0,7);
-    if (!monthly[m]) monthly[m] = {};
-    monthly[m][r[1]] = (monthly[m][r[1]]||0) + 1;
-  });
-  const months = Object.keys(monthly).sort();
-  const short = months.map(m => { const [y,mo] = m.split('-'); return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo)-1]+"'"+ y.slice(2); });
-  const datasets = discs.map(d => ({
-    label: d, data: months.map(m => monthly[m][d]||0),
-    backgroundColor: DISC_COLORS[d], stack: 'a'
-  }));
+  const wattsVals = filtered.map(r => r[7]).filter(w => w != null && w > 0);
   const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
   const gc = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)';
   const tc = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)';
   if (chartInstance) chartInstance.destroy();
+  if (wattsVals.length === 0) {
+    document.getElementById('chartLegend').innerHTML = '';
+    return;
+  }
+  const binSize = 10;
+  const minW = Math.floor(Math.min(...wattsVals) / binSize) * binSize;
+  const maxW = Math.ceil(Math.max(...wattsVals) / binSize) * binSize;
+  const bins = [];
+  for (let b = minW; b < maxW; b += binSize) bins.push(b);
+  const counts = bins.map(b => wattsVals.filter(w => w >= b && w < b + binSize).length);
+  const labels = bins.map(b => b + '');
   chartInstance = new Chart(document.getElementById('mainChart'), {
     type: 'bar',
-    data: { labels: short, datasets },
+    data: { labels, datasets: [{ data: counts, backgroundColor: '#378ADD', borderWidth: 0 }] },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
-      plugins: { legend: { display: false } },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { title: ctx => ctx[0].label + '–' + (parseInt(ctx[0].label)+binSize) + 'W', label: ctx => ctx.raw + ' workouts' } } },
       scales: {
-        x: { stacked: true, grid: { display: false }, ticks: { color: tc, font: { size: 10 }, autoSkip: true, maxTicksLimit: 18, maxRotation: 45 } },
-        y: { stacked: true, grid: { color: gc }, ticks: { color: tc, font: { size: 10 } } }
+        x: { grid: { display: false }, ticks: { color: tc, font: { size: 10 }, autoSkip: true, maxTicksLimit: 15, maxRotation: 0 } },
+        y: { grid: { color: gc }, ticks: { color: tc, font: { size: 10 } } }
       }
     }
   });
-  const lg = document.getElementById('chartLegend');
-  lg.innerHTML = discs.map(d => `<span><span class="legend-dot" style="background:${DISC_COLORS[d]}"></span>${d}</span>`).join('');
+  document.getElementById('chartLegend').innerHTML = `<span style="color:var(--muted);font-size:11px">${wattsVals.length} rides with watts · ${Math.round(wattsVals.reduce((a,b)=>a+b,0)/wattsVals.length)}W avg</span>`;
 }
 
 function renderTable() {
@@ -320,14 +325,17 @@ function renderTable() {
   document.getElementById('pageInfo').textContent = `${start+1}–${end} of ${filtered.length.toLocaleString()}`;
   const wattsSorted = [...filtered].sort((a,b) => (b[7]||0) - (a[7]||0));
   const rankMap = new Map(wattsSorted.map((r,i) => [r, i+1]));
+  const totalWatts = wattsSorted.length;
   const tbody = document.getElementById('tableBody');
   tbody.innerHTML = rows.map(r => {
     const [date,disc,instr,len,type,title,output,watts,res,cad,dist,cal,hr] = r;
     const discClass = 'disc-badge disc-' + (disc||'').replace(/[^a-zA-Z]/g,'');
     const wattsCell = watts ? `<span class="watts-badge">${watts}</span>` : '<span class="muted">—</span>';
-    const rank = watts ? rankMap.get(r) : '—';
+    const rank = watts ? rankMap.get(r) : null;
+    const pct = rank ? Math.ceil(rank / totalWatts * 100) : null;
     return `<tr>
-      <td class="muted" style="font-size:11px;color:var(--hint)">${rank}</td>
+      <td class="muted" style="font-size:11px;color:var(--hint)">${rank||'—'}</td>
+      <td class="muted" style="font-size:11px;color:var(--hint)">${pct ? pct+'%' : '—'}</td>
       <td>${date}</td>
       <td><span class="${discClass}">${disc||''}</span></td>
       <td class="muted">${instr||'—'}</td>
@@ -336,7 +344,6 @@ function renderTable() {
       <td title="${title||''}">${title||'—'}</td>
       <td>${wattsCell}</td>
       <td>${output||'—'}</td>
-      <td class="muted">${hr ? Math.round(hr) : '—'}</td>
       <td class="muted">${dist || '—'}</td>
     </tr>`;
   }).join('');
@@ -377,7 +384,7 @@ function updateSortArrows() {
   const el = document.getElementById('sort-'+sortCol);
   if (el) el.textContent = sortDir === 1 ? ' ↑' : ' ↓';
   document.querySelectorAll('thead th').forEach(th => th.classList.remove('sorted'));
-  const cols = {date:0,disc:1,instr:2,len:3,type:4,title:5,output:6,watts:7,cal:11,hr:12,dist:10};
+  const cols = {date:0,disc:1,instr:2,len:3,type:4,title:5,output:6,watts:7,cal:11,dist:10};
   // mark sorted header
 }
 
