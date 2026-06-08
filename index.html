@@ -231,6 +231,8 @@ function applyFilters() {
     if (F.type && type !== F.type) return false;
     if (F.instr && instr !== F.instr) return false;
     if (F.search && !(title && title.toLowerCase().includes(F.search)) && !(instr && instr.toLowerCase().includes(F.search))) return false;
+    // Exclude unfinished cycling workouts: no output, watts, calories, or distance
+    if (disc === 'Cycling' && !output && !watts && !cal && !dist) return false;
     return true;
   });
   sortAndRender();
