@@ -24,45 +24,63 @@ except ImportError:
 # ── Config ──────────────────────────────────────────────────────────────────
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
-PELOTON_EMAIL    = os.getenv('PELOTON_EMAIL')
-PELOTON_PASSWORD = os.getenv('PELOTON_PASSWORD')
 GITHUB_TOKEN     = os.getenv('GITHUB_TOKEN')
 GITHUB_REPO      = 'soroosj/peloton-dashboard'
 GITHUB_FILE      = 'index.html'
+GITHUB_CSV_FILE  = 'pedalingdata_workouts.csv'
 
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH  = os.path.join(BASE_DIR, 'pedalingdata_workouts.csv')
 HTML_PATH = os.path.join(BASE_DIR, 'index.html')
+ENV_PATH  = os.path.join(BASE_DIR, '.env')
 
-PELOTON_API = 'https://api.pelotoncycle.com'
+PELOTON_API    = 'https://api.onepeloton.com'
+AUTH0_TOKEN_URL = 'https://auth.onepeloton.com/oauth/token'
+AUTH0_CLIENT_ID = 'WVoJxVDdPoFx4RNewvvg6ch2mZ7bwnsM'
+
 HEADERS = {
     'Content-Type': 'application/json',
-    'Peloton-Platform': 'web',
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'application/json',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Origin': 'https://members.onepeloton.com',
-    'Referer': 'https://members.onepeloton.com/',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
 }
 
-# ── Peloton Auth ─────────────────────────────────────────────────────────────
+# ── Peloton Auth (Auth0 refresh token flow) ───────────────────────────────────
 def peloton_login():
-    resp = requests.post(
-        f'{PELOTON_API}/auth/login',
-        json={'username_or_email': PELOTON_EMAIL, 'password': PELOTON_PASSWORD},
-        headers=HEADERS
-    )
+    refresh_token = os.getenv('PELOTON_REFRESH_TOKEN')
+    if not refresh_token:
+        raise ValueError("Missing PELOTON_REFRESH_TOKEN in .env")
+
+    resp = requests.post(AUTH0_TOKEN_URL, json={
+        'grant_type': 'refresh_token',
+        'client_id': AUTH0_CLIENT_ID,
+        'refresh_token': refresh_token,
+    }, headers=HEADERS)
     resp.raise_for_status()
     data = resp.json()
-    user_id = data.get('user_id') or data.get('userId')
-    if not user_id:
-        raise ValueError(f"Login failed: {data}")
-    print(f"  ✓ Logged in (user_id: {user_id})")
-    return user_id, resp.cookies
+
+    access_token = data['access_token']
+    new_refresh   = data.get('refresh_token')
+
+    # Save rotated refresh token back to .env
+    if new_refresh and new_refresh != refresh_token:
+        with open(ENV_PATH, 'r') as f:
+            env_content = f.read()
+        env_content = re.sub(r'PELOTON_REFRESH_TOKEN=.*', f'PELOTON_REFRESH_TOKEN={new_refresh}', env_content)
+        with open(ENV_PATH, 'w') as f:
+            f.write(env_content)
+
+    # Get user_id
+    me = requests.get(f'{PELOTON_API}/api/me',
+                      headers={**HEADERS, 'Authorization': f'Bearer {access_token}'})
+    me.raise_for_status()
+    user_id = me.json()['id']
+    print(f"  ✓ Authenticated (user: {me.json().get('username')})")
+    return user_id, access_token
 
 # ── Fetch Workouts ────────────────────────────────────────────────────────────
-def get_workouts_since(user_id, cookies, since_dt):
+def get_workouts_since(user_id, token, since_dt):
     """Fetch workouts from API newer than since_dt. Returns list of workout dicts."""
+    auth_headers = {**HEADERS, 'Authorization': f'Bearer {token}'}
     all_new = []
     page = 0
     limit = 100
@@ -71,9 +89,8 @@ def get_workouts_since(user_id, cookies, since_dt):
     while True:
         resp = requests.get(
             f'{PELOTON_API}/api/user/{user_id}/workouts',
-            params={'limit': limit, 'page': page, 'sort_by': 'created_at', 'desc': 'true'},
-            cookies=cookies,
-            headers=HEADERS
+            params={'limit': limit, 'page': page, 'sort_by': 'created_at', 'desc': 'true', 'joins': 'ride'},
+            headers=auth_headers
         )
         resp.raise_for_status()
         data = resp.json()
@@ -90,7 +107,6 @@ def get_workouts_since(user_id, cookies, since_dt):
             else:
                 found_old = True
 
-        # Stop paginating once we've passed into older workouts
         if found_old:
             break
 
@@ -102,13 +118,12 @@ def get_workouts_since(user_id, cookies, since_dt):
 
     return all_new
 
-def get_workout_details(workout_id, cookies):
+def get_workout_details(workout_id, token):
     """Fetch full details for one workout (includes summaries with avg metrics)."""
     try:
         resp = requests.get(
             f'{PELOTON_API}/api/workout/{workout_id}',
-            cookies=cookies,
-            headers=HEADERS
+            headers={**HEADERS, 'Authorization': f'Bearer {token}'}
         )
         if resp.status_code == 200:
             return resp.json()
@@ -294,8 +309,18 @@ def rebuild_html():
     }
     raw_json = json.dumps(raw, separators=(',', ':'))
 
-    with open(HTML_PATH, 'r', encoding='utf-8') as f:
-        html = f.read()
+    # Always fetch current template from GitHub so local copy stays in sync
+    gh_headers = {
+        'Authorization': f'token {GITHUB_TOKEN}',
+        'Accept': 'application/vnd.github.v3+json',
+    }
+    gh_url = f'https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}'
+    gh_resp = requests.get(gh_url, headers=gh_headers)
+    if gh_resp.ok:
+        html = base64.b64decode(gh_resp.json()['content']).decode('utf-8')
+    else:
+        with open(HTML_PATH, 'r', encoding='utf-8') as f:
+            html = f.read()
 
     start = html.find('const RAW = ')
     if start == -1:
@@ -329,31 +354,34 @@ def rebuild_html():
     return len(rows)
 
 # ── GitHub Push ───────────────────────────────────────────────────────────────
-def push_to_github():
-    """Push index.html to GitHub via API."""
-    with open(HTML_PATH, 'rb') as f:
+def push_file_to_github(local_path, remote_path, commit_message):
+    """Push a single file to GitHub via the Contents API (create/update)."""
+    with open(local_path, 'rb') as f:
         content_b64 = base64.b64encode(f.read()).decode()
 
     headers = {
         'Authorization': f'token {GITHUB_TOKEN}',
         'Accept': 'application/vnd.github.v3+json',
     }
-    url = f'https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}'
+    url = f'https://api.github.com/repos/{GITHUB_REPO}/contents/{remote_path}'
 
-    # Get current file SHA (required for update)
+    # Get current file SHA (required for update; absent if file doesn't exist yet)
     r = requests.get(url, headers=headers)
-    r.raise_for_status()
-    sha = r.json()['sha']
+    sha = r.json()['sha'] if r.status_code == 200 else None
 
-    # Commit updated file
-    now = datetime.now().strftime('%Y-%m-%d %H:%M')
-    r = requests.put(url, headers=headers, json={
-        'message': f'Auto-update dashboard {now}',
-        'content': content_b64,
-        'sha': sha,
-    })
+    payload = {'message': commit_message, 'content': content_b64}
+    if sha:
+        payload['sha'] = sha
+
+    r = requests.put(url, headers=headers, json=payload)
     r.raise_for_status()
-    print(f"  ✓ Pushed to GitHub: {GITHUB_REPO}/{GITHUB_FILE}")
+    print(f"  ✓ Pushed to GitHub: {GITHUB_REPO}/{remote_path}")
+
+def push_to_github():
+    """Push index.html and the workouts CSV to GitHub via API."""
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    push_file_to_github(HTML_PATH, GITHUB_FILE, f'Auto-update dashboard {now}')
+    push_file_to_github(CSV_PATH, GITHUB_CSV_FILE, f'Auto-update CSV {now}')
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
@@ -362,40 +390,38 @@ def main():
     print(f"{'='*55}")
 
     # Validate env
-    missing = [v for v in ('PELOTON_EMAIL', 'PELOTON_PASSWORD', 'GITHUB_TOKEN') if not os.getenv(v)]
+    missing = [v for v in ('PELOTON_REFRESH_TOKEN', 'GITHUB_TOKEN') if not os.getenv(v)]
     if missing:
         print(f"ERROR: Missing .env variables: {', '.join(missing)}")
-        print("  Copy .env.template to .env and fill in your credentials.")
         sys.exit(1)
 
     # Step 1: Find latest workout in CSV
     latest_dt = get_latest_csv_datetime()
     print(f"\n[1/5] Latest CSV workout: {latest_dt or 'none (full sync)'}")
 
-    # Step 2: Login
-    print(f"\n[2/5] Logging into Peloton...")
-    user_id, cookies = peloton_login()
+    # Step 2: Authenticate
+    print(f"\n[2/5] Authenticating with Peloton...")
+    user_id, token = peloton_login()
 
     # Step 3: Fetch new workouts
     print(f"\n[3/5] Fetching new workouts from API...")
-    new_workouts = get_workouts_since(user_id, cookies, latest_dt)
+    new_workouts = get_workouts_since(user_id, token, latest_dt)
     print(f"  Found {len(new_workouts)} new workout(s)")
 
     if not new_workouts:
         print("\n  Dashboard is already up to date.")
-        # Still rebuild HTML and push in case the script itself changed
-        # (comment out the next two lines if you want to skip when no new workouts)
-        # rebuild_html()
-        # push_to_github()
         return
 
     # Step 4: Fetch details and append to CSV
     print(f"\n[4/5] Fetching workout details and updating CSV...")
     csv_rows = []
     for i, w in enumerate(reversed(new_workouts)):  # oldest first
+        if w.get('status') not in (None, '', 'COMPLETE'):
+            print(f"  Skipping incomplete workout ({w.get('status')})")
+            continue
         title = (w.get('ride') or {}).get('title', 'Unknown')
         print(f"  [{i+1}/{len(new_workouts)}] {title}")
-        details = get_workout_details(w['id'], cookies)
+        details = get_workout_details(w['id'], token)
         time.sleep(0.2)  # be polite to the API
         csv_rows.append(workout_to_csv_row(w, details))
 
@@ -417,4 +443,8 @@ def main():
     print(f"{'='*55}\n")
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"\nERROR: {e}")
+        sys.exit(0)  # Always exit 0 — suppress macOS launchd notifications
