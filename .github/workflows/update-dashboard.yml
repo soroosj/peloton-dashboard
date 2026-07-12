@@ -1,9 +1,7 @@
 name: Update Peloton Dashboard
 
 on:
-  schedule:
-    - cron: '0 2 * * *'   # 20:00 Houston (UTC-6) daily
-  workflow_dispatch:        # allow manual runs
+  workflow_dispatch:        # manual runs only — daily schedule handled by launchd
 
 jobs:
   update:
