@@ -179,7 +179,7 @@ const ROWS = RAW.rows;
 const MAX_DATE = ROWS.reduce((max, r) => (r[0] > max ? r[0] : max), '0000-00-00');
 const DISC_COLORS = {Cycling:'#378ADD',Strength:'#D85A30',Stretching:'#1D9E75',Meditation:'#7F77DD',Yoga:'#BA7517',Running:'#639922',Walking:'#888780',Cardio:'#D4537E'};
 const F = {search:'',dateFrom:'2021-07-01',dateTo:MAX_DATE,discs:new Set(),lengths:new Set(),type:'',instr:''};
-let sortCol = 'watts', sortDir = -1, page = 1, pageSize = 50;
+let sortCol = 'date', sortDir = -1, page = 1, pageSize = 50;
 let filtered = [], chartInstance = null;
 
 function init() {
