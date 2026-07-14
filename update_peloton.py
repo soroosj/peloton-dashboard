@@ -89,7 +89,7 @@ def get_workouts_since(user_id, token, since_dt):
     while True:
         resp = requests.get(
             f'{PELOTON_API}/api/user/{user_id}/workouts',
-            params={'limit': limit, 'page': page, 'sort_by': 'created_at', 'desc': 'true', 'joins': 'ride'},
+            params={'limit': limit, 'page': page, 'sort_by': 'created_at', 'desc': 'true', 'joins': 'ride,ride.instructor'},
             headers=auth_headers
         )
         resp.raise_for_status()
@@ -119,10 +119,11 @@ def get_workouts_since(user_id, token, since_dt):
     return all_new
 
 def get_workout_details(workout_id, token):
-    """Fetch full details for one workout (includes summaries with avg metrics)."""
+    """Fetch full details for one workout (includes avg metrics via performance_graph)."""
     try:
         resp = requests.get(
-            f'{PELOTON_API}/api/workout/{workout_id}',
+            f'{PELOTON_API}/api/workout/{workout_id}/performance_graph',
+            params={'every_n': 1000},
             headers={**HEADERS, 'Authorization': f'Bearer {token}'}
         )
         if resp.status_code == 200:
@@ -165,15 +166,19 @@ def extract_type_from_title(title):
         return m.group(1).strip()
     return ''
 
-def parse_summaries(summaries):
-    """Extract metric values from Peloton summaries array."""
+def parse_summaries(details):
+    """Extract metric values from a performance_graph response.
+    Tries 'average_summaries' (expected shape) then falls back to the
+    old 'summaries' key in case that theory is wrong."""
     result = {}
-    for s in (summaries or []):
-        slug = (s.get('slug') or '').lower()
-        val = s.get('value')
-        if val is None:
-            continue
-        result[slug] = val
+    for key in ('average_summaries', 'summaries'):
+        for s in ((details or {}).get(key) or []):
+            slug = (s.get('slug') or '').lower()
+            val = s.get('value') if s.get('value') is not None else s.get('average_value')
+            if val is None:
+                continue
+            if slug not in result:
+                result[slug] = val
     return result
 
 def workout_to_csv_row(workout, details):
@@ -200,7 +205,7 @@ def workout_to_csv_row(workout, details):
     total_output = round(total_work / 1000) if total_work else ''
 
     # Get averages from summaries in details
-    summaries = parse_summaries((details or {}).get('summaries', []))
+    summaries = parse_summaries(details)
 
     def sv(key, alt_keys=None):
         v = summaries.get(key)
@@ -211,7 +216,7 @@ def workout_to_csv_row(workout, details):
                     break
         return str(round(float(v), 2)) if v is not None else ''
 
-    avg_watts      = sv('avg_watts', ['average_watts'])
+    avg_watts      = sv('avg_output', ['avg_watts', 'average_watts'])
     avg_resistance = str(round(float(summaries['avg_resistance_perc']))) if 'avg_resistance_perc' in summaries else (
                      str(round(float(summaries['avg_resistance']))) if 'avg_resistance' in summaries else '')
     resistance_fmt = f'{avg_resistance}%' if avg_resistance else ''
@@ -422,6 +427,14 @@ def main():
         title = (w.get('ride') or {}).get('title', 'Unknown')
         print(f"  [{i+1}/{len(new_workouts)}] {title}")
         details = get_workout_details(w['id'], token)
+        if i == 0:
+            ride_dbg = w.get('ride') or {}
+            print(f"    [debug] workout keys: {list(w.keys())}")
+            print(f"    [debug] ride keys: {list(ride_dbg.keys())}")
+            print(f"    [debug] ride.instructor: {ride_dbg.get('instructor')}")
+            print(f"    [debug] ride.instructor_id: {ride_dbg.get('instructor_id')}")
+            print(f"    [debug] details keys: {list(details.keys()) if details else 'EMPTY/None'}")
+            print(f"    [debug] details.summaries: {details.get('summaries') if details else 'N/A'}")
         time.sleep(0.2)  # be polite to the API
         csv_rows.append(workout_to_csv_row(w, details))
 
